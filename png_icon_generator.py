@@ -43,7 +43,7 @@ def generate_icons(
     for size in requested_sizes:
         if size > max_size:
             continue
-        resized = img.resize((size, size), Image.LANCZOS)
+        resized = img.resize((size, size), Image.Resampling.LANCZOS)
         out_path = output_dir / f"icon_{size}.png"
         resized.save(out_path, format="PNG")
         typer.echo(f"Saved {out_path}")
