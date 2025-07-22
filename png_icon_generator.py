@@ -13,7 +13,7 @@ from PIL import Image
 
 app = typer.Typer()
 
-DEFAULT_SIZES = [16, 32, 64, 128, 256, 512, 1024]
+DEFAULT_SIZES = [16, 32, 48, 64, 128, 256, 512, 1024]
 
 def validate_square(img: Image.Image):
     if img.width != img.height:
