@@ -1,4 +1,8 @@
+.idea
+
+# uv things
 **/.venv
 **/venv
-
-.idea
+.python-version
+uv.lock
+pyproject.toml
