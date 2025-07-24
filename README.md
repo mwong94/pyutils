@@ -1,13 +1,8 @@
 ## pyutils
 
-This repository is a collection of generally useful, but unrelated, utility scripts written in Python. Each tool is designed to solve a specific problem or automate a common task.
+This repository is a collection of generally useful, but unrelated, utility scripts written in Python. Each tool is designed to solve a specific problem or automate a common task. Kinda expanded into shell scripts, but that's fine too.
 
 Python utilities in this repo use [Typer](https://typer.dev/) to provide a modern and user-friendly command-line interface (CLI).
-
-### Features
-- Standalone Python scripts for various tasks
-- Consistent CLI experience powered by Typer
-- Easy to run and extend
 
 ### Utilities
 - `json_to_csv.py`: convert JSON file to CSV
