@@ -15,19 +15,14 @@ app = typer.Typer()
 
 DEFAULT_SIZES = [16, 32, 48, 64, 128, 256, 512, 1024]
 
-def validate_square(img: Image.Image):
-    if img.width != img.height:
-        raise typer.BadParameter("Input image must be square.")
-
 @app.command()
 def generate_icons(
-    input_path: Path = typer.Argument(..., help="Path to the input square PNG image."),
+    input_path: Path = typer.Argument(..., help="Path to the input PNG image."),
     output_dir: Path = typer.Option(None, help="Directory to save output PNGs. Default: '<filename>_icons'."),
-    sizes: str = typer.Option(None, help="Comma-separated list of output sizes (e.g. '16,32,128')")
+    sizes: str = typer.Option(None, help="Comma-separated list of output widths (e.g. '16,32,128')")
 ):
-    """Generate PNG icons of various sizes from a square PNG image."""
+    """Generate PNG icons of various sizes from a PNG image, scaling by width."""
     img = Image.open(input_path)
-    validate_square(img)
     max_size = img.width
     if sizes:
         try:
@@ -43,10 +38,15 @@ def generate_icons(
     for size in requested_sizes:
         if size > max_size:
             continue
-        resized = img.resize((size, size), Image.Resampling.LANCZOS)
+        # Calculate height to maintain aspect ratio
+        aspect_ratio = img.height / img.width
+        new_height = int(size * aspect_ratio)
+        resized = img.resize((size, new_height), Image.Resampling.LANCZOS)
         out_path = output_dir / f"icon_{size}.png"
         resized.save(out_path, format="PNG")
         typer.echo(f"Saved {out_path}")
 
+if __name__ == "__main__":
+    app()
 if __name__ == "__main__":
     app()
