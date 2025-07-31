@@ -1,3 +1,5 @@
+.env
+
 .idea
 
 # uv things
@@ -6,3 +8,5 @@
 .python-version
 uv.lock
 pyproject.toml
+
+__pycache__
