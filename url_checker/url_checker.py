@@ -96,9 +96,14 @@ def check_url(url: str, timeout: int = 10) -> tuple[int, str]:
     Check if a URL is accessible.
     Returns tuple of (status_code, status_description)
     """
+    # Set a descriptive User-Agent to be transparent about the monitoring tool
+    headers = {
+        "User-Agent": "URL-Availability-Monitor/0.1 (not a bot, checking for url availability)"
+    }
+    
     try:
         logger.debug(f"Checking URL: {url} with timeout {timeout}s")
-        response = requests.head(url, timeout=timeout, allow_redirects=True)
+        response = requests.head(url, timeout=timeout, allow_redirects=True, headers=headers)
         logger.debug(f"URL {url} returned status {response.status_code}")
         return response.status_code, "OK"
     except requests.exceptions.Timeout:
