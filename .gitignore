@@ -10,3 +10,6 @@ uv.lock
 pyproject.toml
 
 __pycache__
+
+*.csv
+*.json
