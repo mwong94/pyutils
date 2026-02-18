@@ -4,6 +4,8 @@
 #     "playwright",
 #     "python-dotenv",
 #     "typer",
+#     "boto3",
+#     "snowflake-connector-python[pandas]",
 # ]
 # ///
 
@@ -25,10 +27,15 @@ import time
 import logging
 from pathlib import Path
 from typing import List, Optional
+import base64
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
 
+import boto3
 import typer
 from playwright.sync_api import sync_playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
 from dotenv import load_dotenv
+import snowflake.connector
 
 # Load environment variables
 _ = load_dotenv()
@@ -44,6 +51,22 @@ ICLOUD_LOGIN_URL = "https://www.icloud.com/"
 # Apple News credentials (from environment variables)
 ICLOUD_EMAIL = os.getenv("ICLOUD_USERNAME")
 ICLOUD_PASSWORD = os.getenv("ICLOUD_PASSWORD")
+
+# AWS S3 configuration (from environment variables)
+S3_BUCKET = os.getenv("S3_BUCKET")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+# Snowflake configuration (from environment variables)
+SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
+SNOWFLAKE_USER = os.getenv("SNOWFLAKE_USER")
+SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE")
+SNOWFLAKE_DATABASE = os.getenv("SNOWFLAKE_DATABASE")
+SNOWFLAKE_SCHEMA = os.getenv("SNOWFLAKE_SCHEMA")
+SNOWFLAKE_PRIVATE_KEY_PATH = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH")
+SNOWFLAKE_PRIVATE_KEY_B64 = os.getenv("SNOWFLAKE_PRIVATE_KEY_B64")
+SNOWFLAKE_PRIVATE_KEY_PASSPHRASE = os.getenv("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
 
 # Regex to parse filenames
 FILENAME_RE = re.compile(
@@ -354,6 +377,140 @@ def download_newest_reports(page: Page, download_dir: Path) -> List[Path]:
     return downloaded_files
 
 
+def upload_file_to_s3(s3_client, file_path: Path, bucket_name: str):
+    """
+    Uploads a file to an S3 bucket.
+
+    Args:
+        s3_client: An initialized boto3 S3 client.
+        file_path: The local path to the file to upload.
+        bucket_name: The name of the S3 bucket.
+    """
+    downloaded_file_name = file_path.name
+    match = FILENAME_RE.match(downloaded_file_name)
+    if not match:
+        logger.warning(f"Could not extract report type from {downloaded_file_name}. Skipping S3 upload.")
+        return
+
+    report_type = match.group("report_type")
+    s3_key = f"kpbs-dagster-prod/apple_news/{report_type}/upload/{downloaded_file_name}"
+    
+    try:
+        logger.info(f"Uploading {downloaded_file_name} to s3://{bucket_name}/{s3_key}...")
+        s3_client.upload_file(str(file_path), bucket_name, s3_key)
+        logger.info("Upload successful.")
+    except Exception as e:
+        logger.error(f"Failed to upload {downloaded_file_name} to S3: {e}")
+
+
+def get_snowflake_private_key():
+    """
+    Retrieves the Snowflake private key from environment variables.
+    It can be a path to a key file or a base64 encoded key.
+    """
+    if SNOWFLAKE_PRIVATE_KEY_B64:
+        logger.info("Using base64-encoded private key for Snowflake.")
+        p_key = serialization.load_pem_private_key(
+            base64.b64decode(SNOWFLAKE_PRIVATE_KEY_B64),
+            password=SNOWFLAKE_PRIVATE_KEY_PASSPHRASE.encode() if SNOWFLAKE_PRIVATE_KEY_PASSPHRASE else None,
+            backend=default_backend()
+        )
+        return p_key.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+    elif SNOWFLAKE_PRIVATE_KEY_PATH:
+        logger.info(f"Using private key from file: {SNOWFLAKE_PRIVATE_KEY_PATH}")
+        with open(SNOWFLAKE_PRIVATE_KEY_PATH, "rb") as key:
+            p_key = serialization.load_pem_private_key(
+                key.read(),
+                password=SNOWFLAKE_PRIVATE_KEY_PASSPHRASE.encode() if SNOWFLAKE_PRIVATE_KEY_PASSPHRASE else None,
+                backend=default_backend()
+            )
+        return p_key.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+    return None
+
+
+def execute_snowflake_sql(downloaded_files: List[Path], sql_script_path: str):
+    """
+    Executes Snowflake COPY INTO commands based on the downloaded report types.
+
+    Args:
+        downloaded_files: A list of paths to the downloaded files.
+        sql_script_path: Path to the Snowflake SQL script.
+    """
+    private_key = get_snowflake_private_key()
+    if not all([SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, private_key]):
+        logger.warning("Snowflake environment variables not fully configured. Skipping Snowflake execution.")
+        return
+
+    try:
+        with open(sql_script_path, "r") as f:
+            sql_script = f.read()
+    except FileNotFoundError:
+        logger.error(f"SQL script not found at {sql_script_path}. Skipping Snowflake execution.")
+        return
+
+    report_types = set()
+    for file_path in downloaded_files:
+        match = FILENAME_RE.match(file_path.name)
+        if match:
+            report_types.add(match.group("report_type"))
+
+    if not report_types:
+        logger.info("No report types found in downloaded files. Nothing to do in Snowflake.")
+        return
+
+    conn = None
+    try:
+        logger.info("Connecting to Snowflake...")
+        conn = snowflake.connector.connect(
+            user=SNOWFLAKE_USER,
+            account=SNOWFLAKE_ACCOUNT,
+            warehouse=SNOWFLAKE_WAREHOUSE,
+            database=SNOWFLAKE_DATABASE,
+            schema=SNOWFLAKE_SCHEMA,
+            private_key=private_key
+        )
+        logger.info("Snowflake connection successful.")
+
+        sql_statements = [s.strip() for s in sql_script.split(';') if s.strip()]
+        
+        for report_type in report_types:
+            logger.info(f"Looking for SQL command for report type: {report_type}")
+            
+            # snake_case_report_type = re.sub(r'(?<!^)(?=[A-Z])', '_', report_type).lower()
+            # search_pattern_table = f"copy into raw_prod.apple_news.{snake_case_report_type}"
+            search_pattern_s3 = f"apple_news/{report_type}/upload/"
+            
+            found_statement = False
+            for statement in sql_statements:
+                if search_pattern_s3 in statement:
+                    logger.info(f"Found matching SQL statement for {report_type}. Executing...")
+                    try:
+                        conn.cursor().execute(statement)
+                        logger.info(f"Successfully executed COPY INTO for {report_type}.")
+                        found_statement = True
+                        break 
+                    except Exception as e:
+                        logger.error(f"Error executing Snowflake SQL for {report_type}: {e}")
+
+            if not found_statement:
+                logger.warning(f"No matching COPY INTO statement found in {sql_script_path} for report type '{report_type}'.")
+
+    except Exception as e:
+        logger.error(f"An error occurred with Snowflake operations: {e}")
+    finally:
+        if conn and not conn.is_closed():
+            conn.close()
+            logger.info("Snowflake connection closed.")
+
+
 @app.command()
 def download(
     headless: bool = typer.Option(False, "--headless", "-h", help="Run browser in headless mode"),
@@ -407,6 +564,38 @@ def download(
                 logger.info(f"  {i+1}. {file.name}")
         else:
             logger.warning("No files were downloaded")
+            
+        # Upload to S3 if configured
+        s3_upload_success = False
+        if S3_BUCKET and AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+            logger.info("Uploading downloaded files to S3...")
+            s3_client = boto3.client(
+                "s3",
+                aws_access_key_id=AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+                region_name=AWS_REGION,
+            )
+            upload_count = 0
+            for file_path in downloaded_files:
+                try:
+                    upload_file_to_s3(s3_client, file_path, S3_BUCKET)
+                    upload_count += 1
+                except Exception as e:
+                    logger.error(f"An error occurred during S3 upload for {file_path.name}: {e}")
+            
+            if upload_count == len(downloaded_files) and downloaded_files:
+                s3_upload_success = True
+        else:
+            logger.info("S3 environment variables not fully configured, skipping S3 upload.")
+
+        # Run Snowflake script if S3 upload was successful
+        if s3_upload_success:
+            logger.info("S3 uploads complete. Running Snowflake script...")
+            # Assuming the script is in the same directory as this python script
+            script_dir = Path(__file__).parent
+            execute_snowflake_sql(downloaded_files, f"{script_dir}/icloud_news_copy_into.sql")
+        else:
+            logger.info("Skipping Snowflake execution because S3 upload was not fully successful or was skipped.")
             
     except Exception as e:
         logger.error(f"Error during execution: {str(e)}")
