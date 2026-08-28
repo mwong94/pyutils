@@ -1,3 +1,5 @@
+#!/usr/bin/env -S uv run --script
+#
 # /// script
 # requires-python = ">=3.13"
 # dependencies = [
@@ -9,7 +11,6 @@
 # ]
 # ///
 
-#!/usr/bin/env python
 """
 Script to download Apple News monthly reports using Playwright.
 
@@ -592,7 +593,7 @@ def download(
         if s3_upload_success:
             logger.info("S3 uploads complete. Running Snowflake script...")
             # Assuming the script is in the same directory as this python script
-            script_dir = Path(__file__).parent
+            script_dir = Path(__file__).resolve().parent
             execute_snowflake_sql(downloaded_files, f"{script_dir}/icloud_news_copy_into.sql")
         else:
             logger.info("Skipping Snowflake execution because S3 upload was not fully successful or was skipped.")

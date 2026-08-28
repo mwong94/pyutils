@@ -1,3 +1,12 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#     "numpy",
+#     "matplotlib",
+# ]
+# ///
+
 import numpy as np
 import matplotlib.pyplot as plt
 import random
