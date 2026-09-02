@@ -22,9 +22,9 @@ from typing import Annotated, Any, Final
 import httpx2
 import typer
 
-DEFAULT_BASE_URL: Final[str] = "https://unsloth.wongfam.io/v1"
-DEFAULT_PROVIDER_ID: Final[str] = "unsloth"
-DEFAULT_PROVIDER_NAME: Final[str] = "Unsloth"
+DEFAULT_BASE_URL: Final[str] = "https://llama.wongfam.io/v1"
+DEFAULT_PROVIDER_ID: Final[str] = "llama"
+DEFAULT_PROVIDER_NAME: Final[str] = "Llama"
 DEFAULT_NPM: Final[str] = "@ai-sdk/openai-compatible"
 DEFAULT_CONTEXT: Final[int] = 131_072
 DEFAULT_OUTPUT: Final[int] = 8_192
@@ -161,7 +161,7 @@ def write_config(path: Path, config: dict[str, Any]) -> None:
 def main(
     base_url: Annotated[
         str,
-        typer.Option(envvar="UNSLOTH_BASE_URL", help="OpenAI-compatible base URL, ending in /v1"),
+        typer.Option(envvar="LLAMA_BASE_URL", help="llama-server router base URL, ending in /v1"),
     ] = DEFAULT_BASE_URL,
     provider_id: Annotated[
         str,
@@ -173,12 +173,12 @@ def main(
     ] = DEFAULT_PROVIDER_NAME,
     api_key: Annotated[
         str | None,
-        typer.Option(envvar="UNSLOTH_KEY", help="key to authenticate with and write to the config"),
+        typer.Option(envvar="LLAMA_KEY", help="key to authenticate with and write to the config"),
     ] = None,
     api_key_ref: Annotated[
         str,
         typer.Option(help="options.apiKey when no key is given; pass '' to omit"),
-    ] = "{env:UNSLOTH_KEY}",
+    ] = "{env:LLAMA_KEY}",
     write: Annotated[
         bool,
         typer.Option("--write", help="merge into the config instead of printing"),
