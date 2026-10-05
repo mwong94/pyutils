@@ -11,6 +11,7 @@
 # ]
 # ///
 
+#!/usr/bin/env python
 """
 Script to download Apple News monthly reports using Playwright.
 
@@ -86,7 +87,7 @@ logger = logging.getLogger("apple_news_downloader")
 app = typer.Typer(help="Download Apple News monthly reports")
 
 
-def setup_browser(headless: bool = False, download_dir: Optional[Path] = None) -> tuple[Browser, Page]:
+def setup_browser(headless: bool = True, download_dir: Optional[Path] = None) -> tuple[Browser, Page]:
     """
     Set up and configure the Playwright browser.
     
@@ -514,7 +515,7 @@ def execute_snowflake_sql(downloaded_files: List[Path], sql_script_path: str):
 
 @app.command()
 def download(
-    headless: bool = typer.Option(False, "--headless", "-h", help="Run browser in headless mode"),
+    headless: bool = typer.Option(True, "--headless/--headed", help="Run browser in headless (hidden) or headed (visible) mode"),
     download_dir: Path = typer.Option(
         Path.home() / "Downloads",
         "--download-dir", "-d",
@@ -527,7 +528,7 @@ def download(
     )
 ):
     """
-    Download the newest Apple News monthly reports.
+    Download the newest Apple News monthly reports and sync to S3/Snowflake.
     """
     if not ICLOUD_EMAIL or not ICLOUD_PASSWORD:
         logger.error("ICLOUD_USERNAME and ICLOUD_PASSWORD environment variables must be set")
@@ -558,45 +559,8 @@ def download(
         logger.info(f"Waiting {wait_time} seconds for downloads to complete...")
         time.sleep(wait_time)
         
-        # Show results
-        if downloaded_files:
-            logger.info(f"Successfully downloaded {len(downloaded_files)} files:")
-            for i, file in enumerate(downloaded_files):
-                logger.info(f"  {i+1}. {file.name}")
-        else:
-            logger.warning("No files were downloaded")
-            
-        # Upload to S3 if configured
-        s3_upload_success = False
-        if S3_BUCKET and AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
-            logger.info("Uploading downloaded files to S3...")
-            s3_client = boto3.client(
-                "s3",
-                aws_access_key_id=AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-                region_name=AWS_REGION,
-            )
-            upload_count = 0
-            for file_path in downloaded_files:
-                try:
-                    upload_file_to_s3(s3_client, file_path, S3_BUCKET)
-                    upload_count += 1
-                except Exception as e:
-                    logger.error(f"An error occurred during S3 upload for {file_path.name}: {e}")
-            
-            if upload_count == len(downloaded_files) and downloaded_files:
-                s3_upload_success = True
-        else:
-            logger.info("S3 environment variables not fully configured, skipping S3 upload.")
-
-        # Run Snowflake script if S3 upload was successful
-        if s3_upload_success:
-            logger.info("S3 uploads complete. Running Snowflake script...")
-            # Assuming the script is in the same directory as this python script
-            script_dir = Path(__file__).resolve().parent
-            execute_snowflake_sql(downloaded_files, f"{script_dir}/icloud_news_copy_into.sql")
-        else:
-            logger.info("Skipping Snowflake execution because S3 upload was not fully successful or was skipped.")
+        # Sync to S3 and Snowflake
+        sync_to_s3_and_snowflake(downloaded_files)
             
     except Exception as e:
         logger.error(f"Error during execution: {str(e)}")
@@ -604,6 +568,82 @@ def download(
     finally:
         logger.info("Closing browser")
         browser.close()
+
+
+def sync_to_s3_and_snowflake(downloaded_files: List[Path]):
+    """
+    Sync a list of downloaded files to S3 and trigger Snowflake processing.
+    """
+    if not downloaded_files:
+        logger.warning("No files to sync")
+        return
+
+    # Show files
+    logger.info(f"Syncing {len(downloaded_files)} files:")
+    for i, file in enumerate(downloaded_files):
+        logger.info(f"  {i+1}. {file.name}")
+
+    # Upload to S3 if configured
+    s3_upload_success = False
+    if S3_BUCKET and AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+        logger.info("Uploading files to S3...")
+        s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            region_name=AWS_REGION,
+        )
+        upload_count = 0
+        for file_path in downloaded_files:
+            try:
+                upload_file_to_s3(s3_client, file_path, S3_BUCKET)
+                upload_count += 1
+            except Exception as e:
+                logger.error(f"An error occurred during S3 upload for {file_path.name}: {e}")
+        
+        if upload_count == len(downloaded_files) and downloaded_files:
+            s3_upload_success = True
+    else:
+        logger.info("S3 environment variables not fully configured, skipping S3 upload.")
+
+    # Run Snowflake script if S3 upload was successful
+    if s3_upload_success:
+        logger.info("S3 uploads complete. Running Snowflake script...")
+        # Assuming the script is in the same directory as this python script
+        script_dir = Path(__file__).resolve().parent
+        execute_snowflake_sql(downloaded_files, f"{script_dir}/icloud_news_copy_into.sql")
+    else:
+        logger.info("Skipping Snowflake execution because S3 upload was not fully successful or was skipped.")
+
+
+@app.command()
+def sync(
+    download_dir: Path = typer.Option(
+        Path.home() / "Downloads",
+        "--download-dir", "-d",
+        help="Directory where downloaded files are located"
+    )
+):
+    """
+    Sync existing downloaded Apple News reports to S3 and Snowflake.
+    """
+    if not download_dir.exists():
+        logger.error(f"Download directory {download_dir} does not exist")
+        raise typer.Exit(code=1)
+
+    logger.info(f"Scanning {download_dir} for report files...")
+    
+    # Find files matching the regex
+    report_files = []
+    for f in download_dir.glob("*.csv"):
+        if FILENAME_RE.match(f.name):
+            report_files.append(f)
+    
+    if not report_files:
+        logger.info("No report files found matching the pattern.")
+        return
+
+    sync_to_s3_and_snowflake(report_files)
 
 
 if __name__ == "__main__":
